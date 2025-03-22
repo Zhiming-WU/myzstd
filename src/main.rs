@@ -1,40 +1,73 @@
-use std::env;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, IsTerminal};
 use std::process;
+use clap::{Parser, value_parser};
 
-fn print_usage(prog: &str) {
-    println!("Usage: {} {{-c | -d}} [level]", prog);
+#[derive(Parser)]
+#[command(name = "myzstd")]
+struct Cli {
+    #[arg(short, long, value_parser = value_parser!(u8).range(1..=22))]
+    level: Option<u8>,
+
+    #[arg(short, long)]
+    decompress: bool,
+
+    input_file_path: Option<String>,
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let mut level = 22;
+    let cli = Cli::parse();
+    let level = cli.level.unwrap_or(3) as i32;
 
-    if args.len() < 2 {
-        print_usage(&args[0]);
-        process::exit(1);
-    }
+    if let Some(path) = cli.input_file_path {
+        // check the input file
+        let metadata = fs::metadata(&path).unwrap_or_else(|error| {
+            eprintln!("Error: Failed in checking the input file({path}): {error:?}");
+            process::exit(1);
+        });
 
-    let do_comp: bool = match args[1].as_str() {
-        "-c" => true,
-        "-d" => false,
-        _ => {
-            print_usage(&args[0]);
+        // report error if it's a directory
+        if metadata.is_dir() {
+            eprintln!("Error: '{path}' is a directory, not a file.");
             process::exit(1);
         }
-    };
+        drop(metadata);
 
-    if args.len() > 2 {
-        if let Ok(num) = args[2].parse::<i32>() {
-            if num > 0 && num <= 22 {
-                level = num
-            }
+        // open the input file
+        let input = OpenOptions::new()
+            .read(true)
+            .open(&path).unwrap_or_else(|error| {
+            eprintln!("Error: Failed in opening the input file({path}): {error:?}");
+            process::exit(1);
+        });
+
+        // open the input file
+        let mut out_path: String = path.clone();
+        out_path.push_str(".zst");
+        let output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&out_path).unwrap_or_else(|error| {
+                eprintln!("Error: Failed in opening the output file({out_path}): {error:?}");
+                process::exit(1);
+        });
+        drop(out_path);
+
+        // do compression or decompression
+        if !cli.decompress {
+            zstd::stream::copy_encode(input, output, level).unwrap();
+        } else {
+            zstd::stream::copy_decode(input, output).unwrap();
         }
-    }
-
-    if do_comp {
-        zstd::stream::copy_encode(io::stdin(), io::stdout(), level).unwrap();
+    } else if io::stdin().is_terminal() {
+        eprintln!("Error: no input file is specified, and stdin is terminal, existing");
+        process::exit(1);
     } else {
-        zstd::stream::copy_decode(io::stdin(), io::stdout()).unwrap();
+        if !cli.decompress {
+            zstd::stream::copy_encode(io::stdin(), io::stdout(), level).unwrap();
+        } else {
+            zstd::stream::copy_decode(io::stdin(), io::stdout()).unwrap();
+        }
     }
 }
